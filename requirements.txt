@@ -1,2 +1,2 @@
-python-telegram-bot==13.15
-yt-dlp==2023.11.16
+python-telegram-bot==13.15        # “Updater” API, fully compatible with Python 3.9
+yt-dlp==2023.11.16               # Stable YouTube downloader
