@@ -3,8 +3,9 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
+import subprocess
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = "8631686831:AAFvy57We-AfDOIAwbdTsyIyjOE7immc4Is"
@@ -23,7 +24,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        msg = await update.message.reply_text("Downloading...")
+        logger.info(f"Processing: {text}")
+        msg = await update.message.reply_text("🔍 Checking video...")
+        
+        # Test FFmpeg first
+        try:
+            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+            logger.info(f"FFmpeg check: {result.returncode}")
+            if result.returncode != 0:
+                await msg.edit_text("❌ FFmpeg not available")
+                return
+        except Exception as e:
+            logger.error(f"FFmpeg test failed: {e}")
+            await msg.edit_text("❌ FFmpeg error")
+            return
         
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -33,60 +47,83 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'preferredquality': '192',
             }],
             'outtmpl': '/tmp/%(title)s.%(ext)s',
-            'extractaudio': True,  # Force audio extraction
-            'audioformat': 'mp3',  # Force MP3 format
+            'quiet': False,
         }
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(text, download=True)
-            
-            # Get the actual downloaded file path
-            actual_filename = ydl.prepare_filename(info)
-            
-            # Find the actual MP3 file (it might have different extension)
-            mp3_filename = None
-            for ext in ['.mp3', '.m4a', '.webm']:
-                potential_file = actual_filename.replace('.webm', '.mp3').replace('.m4a', '.mp3')
-                if os.path.exists(potential_file):
-                    mp3_filename = potential_file
-                    break
-            
-            # If no file found, try the actual filename
-            if not mp3_filename and os.path.exists(actual_filename):
-                mp3_filename = actual_filename
-            
-            if mp3_filename and os.path.exists(mp3_filename):
-                # Ensure it has .mp3 extension for Telegram
-                final_filename = mp3_filename
-                if not mp3_filename.endswith('.mp3'):
-                    final_filename = mp3_filename + '.mp3'
-                    os.rename(mp3_filename, final_filename)
+        await msg.edit_text("⬇️ Downloading audio...")
+        
+        # Download with error handling
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Test download first
+                info = ydl.extract_info(text, download=False)
+                title = info.get('title', 'Unknown')
+                logger.info(f"Video title: {title}")
                 
-                # Send the file
-                with open(final_filename, 'rb') as audio_file:
-                    await update.message.reply_audio(
-                        audio=audio_file,
-                        filename=os.path.basename(final_filename)
-                    )
+                # Now download for real
+                ydl.download([text])
                 
-                await msg.edit_text("Done!")
+                # Find the downloaded file
+                expected_file = f"/tmp/{title}.mp3"
+                logger.info(f"Looking for file: {expected_file}")
                 
-                # Clean up
-                if os.path.exists(final_filename):
-                    os.remove(final_filename)
+                if os.path.exists(expected_file):
+                    file_size = os.path.getsize(expected_file)
+                    logger.info(f"File found: {file_size} bytes")
                     
-            else:
-                await msg.edit_text("Download failed - file not found")
-                
+                    if file_size > 0:
+                        await msg.edit_text("📤 Sending MP3...")
+                        
+                        with open(expected_file, 'rb') as audio_file:
+                            await update.message.reply_audio(
+                                audio=audio_file,
+                                title=title[:50],
+                                caption=f"🎵 {title}"
+                            )
+                        
+                        await msg.edit_text("✅ Done!")
+                        os.remove(expected_file)
+                    else:
+                        await msg.edit_text("❌ Empty file")
+                        os.remove(expected_file)
+                else:
+                    # Check for alternative files
+                    import glob
+                    all_mp3 = glob.glob("/tmp/*.mp3")
+                    logger.info(f"All MP3 files: {all_mp3}")
+                    
+                    if all_mp3:
+                        latest_file = max(all_mp3, key=os.path.getctime)
+                        await msg.edit_text("📤 Sending file...")
+                        
+                        with open(latest_file, 'rb') as audio_file:
+                            await update.message.reply_audio(audio=audio_file)
+                        
+                        await msg.edit_text("✅ Done!")
+                        os.remove(latest_file)
+                    else:
+                        await msg.edit_text("❌ No MP3 file created")
+                        
+        except yt_dlp.DownloadError as e:
+            logger.error(f"Download error: {e}")
+            await msg.edit_text("❌ Download failed")
+        except Exception as e:
+            logger.error(f"Processing error: {e}")
+            await msg.edit_text("❌ Processing error")
+            
     except Exception as e:
-        logger.error(f"Error: {e}")
-        await update.message.reply_text("Error occurred")
+        logger.error(f"General error: {e}")
+        await update.message.reply_text("❌ Error occurred")
 
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT, handle_message))
-    application.run_polling()
+    logger.info("🚀 Starting bot...")
+    try:
+        application = Application.builder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(MessageHandler(filters.TEXT, handle_message))
+        application.run_polling()
+    except Exception as e:
+        logger.error(f"Bot failed to start: {e}")
 
 if __name__ == '__main__':
     main()
