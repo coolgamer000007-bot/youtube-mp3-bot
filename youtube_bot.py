@@ -1,89 +1,112 @@
 import os
-import logging
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
-import yt_dlp
 import re
+import logging
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+import yt_dlp
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# --------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger(__name__)
 
+# ----- put YOUR BOT TOKEN HERE --------------------------------
 BOT_TOKEN = "8631686831:AAFvy57We-AfDOIAwbdTsyIyjOE7immc4Is"
 
-def start(update, context):
-    update.message.reply_text("🎵 Send me a YouTube URL")
+# --------------------------------------------------------------
+def start(update: Update, context: CallbackContext) -> None:
+    """Send a small welcome + a one‑button keyboard."""
+    btn = KeyboardButton(text="🟢 Send YouTube URL")
+    markup = ReplyKeyboardMarkup([[btn]], resize_keyboard=True, one_time_keyboard=True)
+    update.message.reply_text(
+        "🎧 Welcome! Press the button (or just type) and send a YouTube link.\n"
+        "The bot will return the audio as an MP3.",
+        reply_markup=markup,
+    )
 
-def handle_message(update, context):
-    text = update.message.text.strip()
-    
-    if text.startswith('/'):
-        return
-    
-    # Clean the URL
-    clean_url = re.sub(r'\?si=.*', '', text)
-    
-    if not ('youtube.com' in clean_url or 'youtu.be' in clean_url):
-        update.message.reply_text("❌ Send a valid YouTube URL")
-        return
-    
+# --------------------------------------------------------------
+def clean_url(url: str) -> str:
+    """Remove tracking parameters (e.g. ?si=…) that some links contain."""
+    return re.sub(r"\?.*$", "", url.strip())
+
+# --------------------------------------------------------------
+def download_audio(url: str) -> str | None:
+    """
+    Use yt‑dlp to fetch the best audio stream and store it as an MP3.
+    Returns the full path to the created file, or None on failure.
+    """
+    opts = {
+        "format": "bestaudio/best",
+        "outtmpl": "/tmp/%(title)s.%(ext)s",
+        "postprocessors": [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
+        ],
+        "quiet": True,
+        "no_warnings": True,
+    }
+
     try:
-        logger.info(f"Processing URL: {clean_url}")
-        msg = update.message.reply_text("🔍 Checking video...")
-        
-        # Simple yt-dlp configuration
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': '/tmp/%(title)s.%(ext)s',
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Get video info
-            info = ydl.extract_info(clean_url, download=False)
-            title = info.get('title', 'Unknown')
-            logger.info(f"Video: {title}")
-            
-            msg.edit_text(f"⬇️ Downloading: {title[:40]}...")
-            
-            # Download
-            ydl.download([clean_url])
-            
-            # Find the file
-            expected_file = ydl.prepare_filename(info)
-            logger.info(f"Expected file: {expected_file}")
-            
-            if os.path.exists(expected_file):
-                file_size = os.path.getsize(expected_file)
-                logger.info(f"File found: {file_size} bytes")
-                
-                if file_size > 1000:
-                    msg.edit_text("📤 Sending audio...")
-                    
-                    # Send the file
-                    with open(expected_file, 'rb') as audio_file:
-                        update.message.reply_audio(audio=audio_file)
-                    
-                    msg.edit_text("✅ Audio sent!")
-                    os.remove(expected_file)
-                else:
-                    msg.edit_text("❌ File too small")
-                    os.remove(expected_file)
-            else:
-                msg.edit_text("❌ No file created")
-                
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            # yt‑dlp returns the *final* filename after post‑processing
+            file_path = ydl.prepare_filename(info).replace(".webm", ".mp3").replace(".m4a", ".mp3")
+            return file_path if os.path.isfile(file_path) else None
     except Exception as e:
-        logger.error(f"Error: {e}")
-        update.message.reply_text("❌ Error occurred")
+        logger.error(f"yt‑dlp failed: {e}")
+        return None
 
-def main():
-    logger.info("🤖 Starting YouTube MP3 Bot...")
+# --------------------------------------------------------------
+def handle_message(update: Update, context: CallbackContext) -> None:
+    """Main handler – receives the URL, downloads, sends the MP3."""
+    raw_text = update.message.text
+    if not raw_text:
+        return
+
+    url = clean_url(raw_text)
+
+    # Basic validation – we only accept YouTube links
+    if not ("youtube.com" in url or "youtu.be" in url):
+        update.message.reply_text("❌ Please send a valid YouTube URL.")
+        return
+
+    msg = update.message.reply_text("⏳ Downloading…")
+
+    mp3_path = download_audio(url)
+
+    if not mp3_path:
+        msg.edit_text("❌ Download failed – the video may be restricted or offline.")
+        return
+
+    # Send the file
+    try:
+        with open(mp3_path, "rb") as f:
+            update.message.reply_audio(
+                audio=f,
+                title=os.path.splitext(os.path.basename(mp3_path))[0],
+                caption="✅ Here’s your MP3!",
+            )
+        msg.edit_text("✅ Done!")
+    finally:
+        # Clean‑up the temporary file (always)
+        if os.path.exists(mp3_path):
+            os.remove(mp3_path)
+
+# --------------------------------------------------------------
+def main() -> None:
+    """Start the bot."""
+    logger.info("🚀 Starting YouTube‑MP3 bot…")
     updater = Updater(BOT_TOKEN, use_context=True)
+
     dp = updater.dispatcher
-    
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    
+
+    # Polling (Railway will keep the container alive)
     updater.start_polling()
     updater.idle()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
