@@ -1,7 +1,7 @@
 import os
 import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
 import re
 
@@ -10,10 +10,10 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = "8631686831:AAFvy57We-AfDOIAwbdTsyIyjOE7immc4Is"
 
-async def start(update: Update, context):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎵 Send me a YouTube URL")
 
-async def handle_message(update: Update, context):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     
     if text.startswith('/'):
@@ -30,12 +30,10 @@ async def handle_message(update: Update, context):
         logger.info(f"Processing URL: {clean_url}")
         msg = await update.message.reply_text("🔍 Checking video...")
         
-        # Simple yt-dlp configuration
+        # yt-dlp configuration for Python 3.13
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': '/tmp/%(title)s.%(ext)s',
-            'extractaudio': True,
-            'audioformat': 'mp3',
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -88,18 +86,7 @@ async def handle_message(update: Update, context):
                 await msg.edit_text("✅ Audio sent!")
                 os.remove(found_file)
             else:
-                # Try to find any audio files
-                import glob
-                audio_files = glob.glob('/tmp/*.mp3') + glob.glob('/tmp/*.m4a')
-                if audio_files:
-                    latest_file = max(audio_files, key=os.path.getctime)
-                    await msg.edit_text("📤 Sending file...")
-                    with open(latest_file, 'rb') as f:
-                        await update.message.reply_audio(audio=f)
-                    await msg.edit_text("✅ Done!")
-                    os.remove(latest_file)
-                else:
-                    await msg.edit_text("❌ No audio file created")
+                await msg.edit_text("❌ No audio file created")
                 
     except Exception as e:
         logger.error(f"Error: {e}")
