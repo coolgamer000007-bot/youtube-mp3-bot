@@ -12,8 +12,7 @@ BOT_TOKEN = "8631686831:AAFvy57We-AfDOIAwbdTsyIyjOE7immc4Is"
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎵 YouTube to MP3 Bot!\n\n"
-        "Send me a YouTube URL and I'll download it as MP3.\n\n"
-        "Example: https://youtu.be/dQw4w9WgXcQ"
+        "Send me a YouTube URL and I'll download it as MP3."
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
