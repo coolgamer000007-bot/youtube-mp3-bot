@@ -3,6 +3,8 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
+import random
+import time
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -24,129 +26,156 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         logger.info(f"Processing URL: {text}")
-        msg = await update.message.reply_text("🔍 Checking video...")
+        msg = await update.message.reply_text("🔍 Preparing download...")
         
-        # SIMPLER yt-dlp configuration that actually works
+        # Configuration that bypasses restrictions
         ydl_opts = {
-            # Download best available audio format
-            'format': 'bestaudio',
-            # Output template
+            # Use a common audio format that works
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
             'outtmpl': '/tmp/%(title)s.%(ext)s',
-            # Extract audio to MP3
+            
+            # Bypass restrictions
+            'ignoreerrors': True,
+            'nooverwrites': True,
+            'retries': 3,
+            'fragment_retries': 3,
+            'skip_unavailable_fragments': True,
+            
+            # Simulate browser behavior
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate',
+            },
+            
+            # Audio extraction settings
             'extractaudio': True,
             'audioformat': 'mp3',
-            # Audio quality
             'audioquality': '192',
-            # Disable age restriction checks
-            'age_limit': 99,
-            # Skip download if file exists
-            'nopart': True,
-            # Show progress
+            
+            # Progress and logging
             'quiet': False,
             'no_warnings': False,
-            # Force IPv4 (sometimes helps)
-            'source_address': '0.0.0.0',
-            # Skip problematic videos
-            'ignoreerrors': False,
         }
+        
+        # Add random delay to avoid detection
+        await asyncio.sleep(random.uniform(1, 3))
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # First, test if we can get video info
+                # Get video info first
                 info = ydl.extract_info(text, download=False)
+                if not info:
+                    await msg.edit_text("❌ Cannot access video info")
+                    return
+                
                 title = info.get('title', 'Unknown')
-                logger.info(f"Video info retrieved: {title}")
+                logger.info(f"Video accessible: {title}")
                 
-                await msg.edit_text(f"⬇️ Downloading: {title[:50]}...")
+                await msg.edit_text(f"⬇️ Downloading: {title[:40]}...")
                 
-                # Now download and extract audio
-                ydl.download([text])
+                # Download with retry logic
+                success = False
+                for attempt in range(2):
+                    try:
+                        ydl.download([text])
+                        success = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"Attempt {attempt+1} failed: {e}")
+                        if attempt < 1:  # Only retry once
+                            await msg.edit_text(f"🔄 Retrying... ({attempt+1}/2)")
+                            await asyncio.sleep(2)
                 
-                # File should be created as /tmp/[title].mp3
-                # Clean filename for finding
-                clean_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
-                expected_file = f"/tmp/{clean_title}.mp3"
+                if not success:
+                    await msg.edit_text("❌ Download failed after retries")
+                    return
                 
-                logger.info(f"Looking for file: {expected_file}")
+                # Find the downloaded file
+                expected_file = ydl.prepare_filename(info)
+                logger.info(f"Expected file: {expected_file}")
                 
-                # Check if file exists
-                if os.path.exists(expected_file):
-                    file_size = os.path.getsize(expected_file)
-                    logger.info(f"File found: {file_size} bytes")
+                # Check various possible file locations
+                files_to_check = [
+                    expected_file,
+                    expected_file.replace('.webm', '.mp3'),
+                    expected_file.replace('.m4a', '.mp3'),
+                    expected_file.replace('.webm', '.m4a'),
+                ]
+                
+                found_file = None
+                for file_path in files_to_check:
+                    if os.path.exists(file_path):
+                        found_file = file_path
+                        file_size = os.path.getsize(file_path)
+                        logger.info(f"Found file: {found_file} ({file_size} bytes)")
+                        break
+                
+                if found_file and os.path.getsize(found_file) > 1000:
+                    await msg.edit_text("📤 Sending audio...")
                     
-                    if file_size > 1000:  # Ensure file has content
-                        await msg.edit_text("📤 Sending audio...")
-                        
-                        with open(expected_file, 'rb') as audio_file:
-                            await update.message.reply_audio(
-                                audio=audio_file,
-                                title=title[:64],
-                                performer="YouTube"
-                            )
-                        
-                        await msg.edit_text("✅ Audio sent successfully!")
-                        os.remove(expected_file)
-                    else:
-                        await msg.edit_text("❌ File is empty")
-                        os.remove(expected_file)
+                    # Send whatever format we got
+                    with open(found_file, 'rb') as audio_file:
+                        await update.message.reply_audio(
+                            audio=audio_file,
+                            title=title[:64],
+                            performer="YouTube Audio"
+                        )
+                    
+                    await msg.edit_text("✅ Audio sent!")
+                    os.remove(found_file)
                 else:
-                    # Try alternative approach - download as m4a and convert
-                    logger.info("MP3 not found, trying alternative download")
-                    await download_alternative(update, msg, text)
+                    await msg.edit_text("❌ No valid audio file created")
                         
-        except yt_dlp.DownloadError as e:
-            logger.error(f"DownloadError: {e}")
-            await msg.edit_text("❌ Download failed - video might be restricted")
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
-            await msg.edit_text("❌ Unexpected error")
+            logger.error(f"Download processing error: {e}")
+            # Try one more alternative method
+            await try_direct_download(update, msg, text)
             
     except Exception as e:
         logger.error(f"General error: {e}")
-        await update.message.reply_text("❌ Failed to process")
+        await update.message.reply_text("❌ Processing failed")
 
-async def download_alternative(update: Update, msg, url):
-    """Alternative download method"""
+async def try_direct_download(update: Update, msg, url):
+    """Direct command-line yt-dlp approach"""
     try:
-        await msg.edit_text("🔄 Trying alternative method...")
+        await msg.edit_text("🔄 Trying direct method...")
         
-        # Download as m4a first, then convert
-        ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio',
-            'outtmpl': '/tmp/audio.%(ext)s',
-            'quiet': False,
-        }
+        # Use yt-dlp command line directly
+        output_file = "/tmp/direct_output.%(ext)s"
+        cmd = [
+            'yt-dlp',
+            '-x',  # Extract audio
+            '--audio-format', 'mp3',
+            '--audio-quality', '192',
+            '-o', output_file,
+            '--ignore-errors',
+            url
+        ]
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-            
-        # Check for m4a file
-        if os.path.exists('/tmp/audio.m4a'):
-            await msg.edit_text("📤 Converting to MP3...")
-            
-            # Convert using ffmpeg
-            import subprocess
-            result = subprocess.run([
-                'ffmpeg', '-i', '/tmp/audio.m4a', 
-                '-codec:a', 'libmp3lame', '-b:a', '192k',
-                '/tmp/audio.mp3'
-            ], capture_output=True)
-            
-            if result.returncode == 0 and os.path.exists('/tmp/audio.mp3'):
-                with open('/tmp/audio.mp3', 'rb') as f:
+        import subprocess
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        
+        logger.info(f"Direct method return: {result.returncode}")
+        logger.info(f"Direct method stdout: {result.stdout}")
+        logger.info(f"Direct method stderr: {result.stderr}")
+        
+        # Find the output file
+        for ext in ['mp3', 'm4a', 'webm']:
+            file_path = f"/tmp/direct_output.{ext}"
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 1000:
+                await msg.edit_text("📤 Sending file...")
+                with open(file_path, 'rb') as f:
                     await update.message.reply_audio(audio=f)
-                await msg.edit_text("✅ Done!")
-                # Cleanup
-                for file in ['/tmp/audio.m4a', '/tmp/audio.mp3']:
-                    if os.path.exists(file):
-                        os.remove(file)
-            else:
-                await msg.edit_text("❌ Conversion failed")
-        else:
-            await msg.edit_text("❌ Alternative download failed")
-            
+                await msg.edit_text("✅ Success!")
+                os.remove(file_path)
+                return
+        
+        await msg.edit_text("❌ Direct method failed")
+        
     except Exception as e:
-        logger.error(f"Alternative method error: {e}")
+        logger.error(f"Direct method error: {e}")
         await msg.edit_text("❌ All methods failed")
 
 def main():
