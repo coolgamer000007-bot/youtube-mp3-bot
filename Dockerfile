@@ -2,10 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install FFmpeg properly
+# Install FFmpeg and dependencies
 RUN apt-get update && \
     apt-get install -y ffmpeg && \
-    ffmpeg -version
+    apt-get install -y libavcodec-extra
 
 COPY requirements.txt .
 
