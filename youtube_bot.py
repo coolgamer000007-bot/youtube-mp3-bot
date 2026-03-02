@@ -27,7 +27,7 @@ def handle_message(update: Update, context: CallbackContext):
     try:
         update.message.reply_text("🔍 Getting video info...")
         
-        # First, try to get video info to check if it exists
+        # Get video info
         ydl_opts_info = {
             "quiet": True,
             "no_warnings": True,
@@ -39,73 +39,50 @@ def handle_message(update: Update, context: CallbackContext):
             title = info.get('title', 'Unknown')
             update.message.reply_text(f"🎵 Found: {title}")
         
-        update.message.reply_text("⬇️ Downloading audio...")
+        update.message.reply_text("⬇️ Downloading and converting to MP3...")
         
-        # Download with proper settings
+        # Download and convert to MP3
         ydl_opts = {
             "format": "bestaudio/best",
-            "outtmpl": "/tmp/downloaded_audio.%(ext)s",
+            "outtmpl": "/tmp/audio.%(ext)s",
             "quiet": True,
-            "no_warnings": False,
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        # Find the downloaded file (it might have different extensions)
-        audio_files = []
-        for ext in ['*.mp3', '*.m4a', '*.webm', '*.opus']:
-            audio_files.extend(glob.glob(f"/tmp/downloaded_audio.{ext}"))
+        # Look for MP3 file
+        mp3_files = glob.glob("/tmp/audio.mp3")
+        if not mp3_files:
+            # Check for any MP3 files in tmp
+            mp3_files = glob.glob("/tmp/*.mp3")
         
-        # If no specific pattern found, look for any audio file in tmp
-        if not audio_files:
-            audio_files = glob.glob("/tmp/downloaded_audio*")
-        
-        logger.info(f"Found audio files: {audio_files}")
-        
-        if audio_files:
-            # Get the first file found
-            filepath = audio_files[0]
+        if mp3_files:
+            filepath = mp3_files[0]  # Take the first MP3 file
             
-            # If it's a weird extension, try to rename it
-            if filepath.endswith('.mhtml') or '.mhtml.' in filepath:
-                # Try to convert to proper MP3
-                new_filepath = filepath.replace('.mhtml', '').replace('..', '.') + '.mp3'
-                if new_filepath.endswith('.mp3'):
-                    os.rename(filepath, new_filepath)
-                    filepath = new_filepath
-                else:
-                    # Just add .mp3 extension
-                    os.rename(filepath, filepath + '.mp3')
-                    filepath = filepath + '.mp3'
-            
-            # Check if file exists and is not empty
-            if os.path.exists(filepath) and os.path.getsize(filepath) > 1000:  # At least 1KB
-                # Send the file
-                with open(filepath, "rb") as f:
-                    update.message.reply_audio(audio=f, title=title[:50], caption="✅ Here's your audio!")
-                os.remove(filepath)
-                update.message.reply_text("✅ Done!")
-            else:
-                update.message.reply_text("❌ Downloaded file is too small or corrupted")
+            # Send the file
+            with open(filepath, "rb") as f:
+                update.message.reply_audio(audio=f, title=title[:50], caption="✅ Here's your MP3!")
+            os.remove(filepath)
+            update.message.reply_text("✅ Done!")
         else:
-            update.message.reply_text("❌ No audio file was created during download")
+            update.message.reply_text("❌ Could not create MP3 file")
 
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Download failed for {url}: {error_msg}")
         
-        # Provide user-friendly error messages
         if "Sign in to confirm you're not a bot" in error_msg:
-            update.message.reply_text("❌ This video requires human verification. Try a different public video.")
+            update.message.reply_text("❌ Video requires human verification")
         elif "HTTP Error 404" in error_msg:
-            update.message.reply_text("❌ Video not found (404)")
-        elif "HTTP Error 403" in error_msg or "private" in error_msg.lower():
-            update.message.reply_text("❌ Video is private or unavailable")
-        elif "format is not available" in error_msg:
-            update.message.reply_text("❌ No audio available for this video")
-        elif "Precondition check failed" in error_msg:
-            update.message.reply_text("❌ YouTube blocked this request")
+            update.message.reply_text("❌ Video not found")
+        elif "HTTP Error 403" in error_msg:
+            update.message.reply_text("❌ Video is private/unavailable")
         else:
             update.message.reply_text(f"❌ Error: {error_msg[:100]}")
 
