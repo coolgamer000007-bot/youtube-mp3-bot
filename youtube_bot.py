@@ -40,22 +40,36 @@ def handle_message(update: Update, context: CallbackContext):
         
         update.message.reply_text("⬇️ Downloading audio...")
         
-        # Try different format options
+        # Proper audio format selection
         ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": "/tmp/audio.%(ext)s",
+            "format": "bestaudio[ext=m4a]/bestaudio/best",
+            "outtmpl": "/tmp/%(title)s.%(ext)s",
             "quiet": True,
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-            filepath = ydl.prepare_filename(info)
+            filepath = ydl.prepare_filename(info).replace('.webm', '.mp3').replace('.m4a', '.mp3')
         
-        # Send the file
-        with open(filepath, "rb") as f:
-            update.message.reply_audio(audio=f, title=title[:50])
-        os.remove(filepath)
-        update.message.reply_text("✅ Done!")
+        # Make sure we have the correct file extension
+        if not filepath.endswith('.mp3'):
+            base_path = filepath.rsplit('.', 1)[0]
+            filepath = base_path + '.mp3'
+        
+        # Check if file exists and is not empty
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            # Send the file
+            with open(filepath, "rb") as f:
+                update.message.reply_audio(audio=f, title=title[:50], caption="✅ Here's your MP3!")
+            os.remove(filepath)
+            update.message.reply_text("✅ Done!")
+        else:
+            update.message.reply_text("❌ Downloaded file is empty or missing")
 
     except Exception as e:
         error_msg = str(e)
