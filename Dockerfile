@@ -1,5 +1,5 @@
 # ---- Base image -------------------------------------------------
-FROM python:3.9-slim               # Python 3.9 – works with PTB 13.x
+FROM python:3.9-slim
 
 # ---- Install system packages (ffmpeg is needed for MP3 conversion)
 RUN apt-get update && \
