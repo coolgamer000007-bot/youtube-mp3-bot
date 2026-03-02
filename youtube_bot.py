@@ -2,23 +2,24 @@
 # -*- coding: utf-8 -*-
 
 """
-Simple Telegram bot: copy‑paste any YouTube link → receive MP3 audio.
+Simple Telegram → YouTube audio downloader.
 
-Features
---------
-* One‑button “Start”.
-* Accepts any YouTube link (including the ?si=… tracking part).
-* Downloads best audio, converts to MP3 (ffmpeg), sends it.
-* If ffmpeg conversion fails, it falls back to sending the original file.
-* No generic error messages – you’ll either get the audio or a clear note.
+User sends any YouTube link (including ?si=… tracking part).
+Bot:
+* downloads the best audio stream (normally an .m4a file)
+* sends that file back as a Telegram audio message
+* if anything goes wrong, the bot shows a short error message
+  (the full error is also written to Railway logs)
 """
 
 import os
 import re
 import logging
-from typing import Optional, Tuple  # <-- ADD Tuple here
+from typing import Optional, Tuple
+
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+
 import yt_dlp
 
 # ----------------------------------------------------------------------
@@ -41,7 +42,7 @@ def start(update: Update, context: CallbackContext) -> None:
 
     update.message.reply_text(
         "🎧 Welcome! Press the button (or just paste) a YouTube link.\n"
-        "The bot will download the audio and send it back as an MP3 file.",
+        "The bot will download the audio and send it back as a Telegram audio file.",
         reply_markup=markup,
     )
 
@@ -53,17 +54,16 @@ def clean_url(url: str) -> str:
 
 def download_audio(url: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Download best audio from YouTube and convert to MP3.
-    Returns (path_to_mp3, error_message). If conversion fails,
-    returns the original file path inside `error_message`.
+    Download the best audio stream from YouTube.
+    Returns (path_to_file, error_message). The file will usually be .m4a.
     """
     ydl_opts = {
-        # Prefer m4a (Telegram can send it directly)
+        # Prefer an m4a audio-only stream, fallback to any best audio.
         "format": "bestaudio[ext=m4a]/bestaudio",
         "outtmpl": "/tmp/%(title)s.%(ext)s",
         "quiet": True,
         "no_warnings": True,
-        # Geo‑bypass + realistic headers to avoid blocks
+        # Geo‑bypass and a realistic User‑Agent help with region‑locked videos.
         "geo_bypass": True,
         "geo_bypass_country": "US",
         "http_headers": {
@@ -73,6 +73,7 @@ def download_audio(url: str) -> Tuple[Optional[str], Optional[str]]:
                 "Chrome/124.0.0.0 Safari/537.36"
             )
         },
+        # A few retries in case of transient network issues.
         "retries": 5,
         "fragment_retries": 5,
         "socket_timeout": 15,
@@ -83,106 +84,18 @@ def download_audio(url: str) -> Tuple[Optional[str], Optional[str]]:
             info = ydl.extract_info(url, download=True)
             downloaded = ydl.prepare_filename(info)
 
-            # If we got a .webm, rename to .m4a (Telegram still plays it)
+            # If yt‑dlp gave us a .webm (some audio‑only streams), rename to .m4a.
             if downloaded.endswith(".webm"):
                 new_path = downloaded.replace(".webm", ".m4a")
                 os.rename(downloaded, new_path)
                 downloaded = new_path
 
-            # Convert to MP3 using ffmpeg
-            mp3_path = downloaded.rsplit(".", 1)[0] + ".mp3"
-            ffmpeg_cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                downloaded,
-                "-codec:a",
-                "libmp3lame",
-                "-b:a",
-                "192k",
-                mp3_path,
-            ]
-            import subprocess
-
-            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
-            if result.returncode == 0 and os.path.isfile(mp3_path):
-                return mp3_path, None
+            if os.path.isfile(downloaded):
+                return downloaded, None
             else:
-                # Conversion failed – send original file instead
-                logger.warning(f"ffmpeg failed ({result.returncode}): {result.stderr}")
-                return downloaded, "ffmpeg conversion failed"
+                return None, "downloaded file not found"
     except Exception as e:
+        # Log the full traceback to Railway logs.
         logger.error(f"yt‑dlp download error for {url}: {e}")
-        return None, str(e)
-
-
-def handle_message(update: Update, context: CallbackContext) -> None:
-    """Receive a YouTube URL, download audio, and send it."""
-    raw = update.message.text
-    if not raw:
-        return
-
-    url = clean_url(raw)
-
-    # --------------------------------------------------------------
-    # Validate that it's a YouTube URL
-    if not ("youtube.com" in url or "youtu.be" in url):
-        update.message.reply_text("❌ Please send a valid YouTube URL.")
-        return
-
-    status_msg = update.message.reply_text("🔍 Downloading…" )
-
-    file_path, error = download_audio(url)
-
-    if not file_path:
-        # Friendly user message based on known error patterns
-        friendly = "❌ Could not process the video."
-        if error:
-            lowered = error.lower()
-            if "404" in lowered:
-                friendly = "❌ Video not found (404)."
-            elif "private" in lowered:
-                friendly = "❌ Video is private."
-            elif "age" in lowered or "restricted" in lowered:
-                friendly = "❌ Age‑restricted or region‑blocked video."
-        status_msg.edit_text(friendly)
-        logger.info(f"Download failed for {url}: {error}")
-        return
-
-    # --------------------------------------------------------------
-    # Send the audio file (MP3 if conversion succeeded, else original)
-    try:
-        with open(file_path, "rb") as audio_file:
-            caption = "✅ Here’s your audio file!"
-            update.message.reply_audio(
-                audio=audio_file,
-                title=os.path.splitext(os.path.basename(file_path))[0],
-                caption=caption,
-            )
-        status_msg.edit_text("✅ Done!")
-    except Exception as e:
-        logger.error(f"Sending file failed: {e}")
-        status_msg.edit_text("❌ Could not send the audio file.")
-    finally:
-        # Cleanup temporary file
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-
-
-def main() -> None:
-    logger.info("🚀 Starting YouTube‑Audio Bot…")
-    updater = Updater(BOT_TOKEN, use_context=True)
-
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-
-    updater.start_polling()
-    updater.idle()
-
-
-if __name__ == "__main__":
-    main()
+        # Return a short, user‑friendly error (first 200 chars).
+        return None, str(e*
