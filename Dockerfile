@@ -1,8 +1,7 @@
 # ---- Base image -------------------------------------------------
-FROM python:3.9-slim
+FROM python:3.9-slim               # Python 3.9 – works with PTB 13.x
 
-# ---- Install OS packages ---------------------------------------
-# ffmpeg is required for audio conversion to MP3
+# ---- Install system packages (ffmpeg is needed for MP3 conversion)
 RUN apt-get update && \
     apt-get install -y ffmpeg && \
     rm -rf /var/lib/apt/lists/*
@@ -10,12 +9,12 @@ RUN apt-get update && \
 # ---- Working directory -----------------------------------------
 WORKDIR /app
 
-# ---- Python dependencies ----------------------------------------
+# ---- Install Python dependencies ---------------------------------
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ---- Copy application code --------------------------------------
+# ---- Copy the bot code -----------------------------------------
 COPY . .
 
-# ---- Command to run the bot ------------------------------------
+# ---- Run the bot ------------------------------------------------
 CMD ["python", "youtube_bot.py"]
