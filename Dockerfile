@@ -1,8 +1,8 @@
 # ---- Base image -------------------------------------------------
-FROM python:3.9-slim               # Python 3.9 – fully supported by PTB v13
+FROM python:3.9-slim
 
 # ---- Install OS packages ---------------------------------------
-# ffmpeg is needed for audio conversion (you can keep it even if you only send raw files)
+# ffmpeg is required for audio conversion (keeps the file as MP3)
 RUN apt-get update && \
     apt-get install -y ffmpeg && \
     rm -rf /var/lib/apt/lists/*
